@@ -428,7 +428,7 @@ def main():
                        help='Output size for aligned images (width height)')
     parser.add_argument('--keep-jpeg', action='store_true', 
                        help='Keep intermediate JPEG folders after alignment')
-    parser.add_argument('--output-dir', help='Base output directory (default: parent of enhanced dataset)')
+    parser.add_argument('--output-dir', help='Base output directory (default: parent of enhanced dataset)', default='output_folder')
     
     args = parser.parse_args()
     
