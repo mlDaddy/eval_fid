@@ -8,6 +8,8 @@ A consolidated pipeline for calculating Fréchet Inception Distance (FID) scores
 
 * **Reference Subset Selection**: Optionally selects optimal reference images based on k-nearest neighbors with enhanced dataset
 
+* **Adaptive k Selection**: Automatically increases k value until enough unique reference images are selected to match or exceed the enhanced dataset size
+
 * **FID Calculation**: Computes FID scores between reference and both enhanced/raw datasets
 
 * **Batch Processing**: Efficient GPU-accelerated processing with configurable batch sizes
@@ -106,9 +108,11 @@ python consolidated_fid_pipeline.py enhanced_dataset raw_dataset reference_datas
 
 * `--dims`: Inception feature dimensionality (default: 2048)
 
-* `--k`: k-th nearest neighbor for selection (default: 1)
+* `--k`: Initial k-th nearest neighbor for selection (default: 1, will increase automatically if needed)
 
 * `--no-subset-selection`: Skip subset selection, use full reference dataset
+
+* `--alignment_already_done`: Indicates alignment has already been completed (will verify aligned images exist)
 
 * `--output-size`: Output size for aligned images \[width height\] (default: 178 218)
 
@@ -135,6 +139,8 @@ python consolidated_fid_pipeline.py enhanced_dataset raw_dataset reference_datas
 * Finds k-nearest neighbors between reference and enhanced images
 
 * Selects optimal reference subset for fair comparison
+
+* Automatically increases k value until enough unique images are selected
 
 * Can be skipped with `--no-subset-selection` flag
 
@@ -210,11 +216,19 @@ python consolidated_fid_pipeline.py enhanced_dataset raw_dataset reference_datas
 
   * Pairwise distances are calculated between reference and enhanced image features
 
-  * For each reference image, the k-th nearest enhanced image is identified
+  * Starting with the initial k value, for each reference image, the k-th nearest enhanced image is identified
 
-  * Unique set of selected enhanced images is collected
+  * If the number of unique selected images is less than the enhanced dataset size:
+
+    * k is automatically increased
+
+    * The selection process is repeated with the new k value
+
+    * This continues until enough unique images are selected or maximum k is reached
 
   * Selected images are copied to a new directory for FID calculation
+
+  * Progress messages show the number of images selected at each k value
 
 ### FID Calculation Process
 
@@ -265,6 +279,7 @@ FID (Reference vs Raw): 23.4567
 Improvement: 8.2226
 
 Reference subset used: ./results/selected_reference_subset
+Selected 1024 images with k=3 (started with k=1, increased automatically)
 ```
 
 ## Supported Image Formats

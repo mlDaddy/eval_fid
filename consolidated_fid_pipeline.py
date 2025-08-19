@@ -15,6 +15,7 @@ import shutil
 import time
 import argparse
 from pathlib import Path
+from tqdm import tqdm
 
 import face_recognition
 from PIL import Image, ImageEnhance
@@ -52,7 +53,7 @@ class FastImageDataset(Dataset):
         img = (img - mean) / (std + 1e-8)
         return img
 
-def convert_to_jpeg(input_folder, jpeg_folder):
+def convert_to_jpeg(input_folder, jpeg_folder, alignment_already_done=False):
     """Convert all images in input folder to JPEG format."""
     input_path = Path(input_folder)
     jpeg_path = Path(jpeg_folder)
@@ -62,8 +63,8 @@ def convert_to_jpeg(input_folder, jpeg_folder):
         return []
 
     jpeg_path.mkdir(exist_ok=True)
-    print(f"JPEG conversion folder: {jpeg_path}")
-
+    
+    # Use a single progress bar with description instead of multiple print statements
     image_files = [f for f in input_path.iterdir()
                    if f.suffix.lower() in {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp', '.gif'}]
 
@@ -71,14 +72,27 @@ def convert_to_jpeg(input_folder, jpeg_folder):
         print(f"No image files found in {input_folder}")
         return []
 
-    print(f"Converting {len(image_files)} images to JPEG format...")
-
     converted_files = []
     successful = 0
     failed = 0
 
-    for i, image_file in enumerate(image_files):
-        print(f"Converting {i+1}/{len(image_files)}: {image_file.name}")
+    # Create a progress bar for the conversion process
+    pbar = tqdm(total=len(image_files), desc="Converting to JPEG", unit="img")
+    
+    for image_file in image_files:
+        jpeg_filename = f"{image_file.stem}.jpg"
+        jpeg_filepath = jpeg_path / jpeg_filename
+        
+        # Update progress bar description
+        pbar.set_postfix(file=image_file.name)
+        
+        # Skip if alignment already done and JPEG file exists
+        if alignment_already_done and jpeg_filepath.exists():
+            pbar.set_postfix(file=image_file.name, status="skipped (exists)")
+            converted_files.append(str(jpeg_filepath))
+            successful += 1
+            pbar.update(1)
+            continue
 
         try:
             with Image.open(image_file) as img:
@@ -90,28 +104,39 @@ def convert_to_jpeg(input_folder, jpeg_folder):
                     else:
                         img = img.convert('RGB')
 
-                jpeg_filename = f"{image_file.stem}.jpg"
-                jpeg_filepath = jpeg_path / jpeg_filename
                 img.save(jpeg_filepath, 'JPEG', quality=95, optimize=True)
-
                 converted_files.append(str(jpeg_filepath))
                 successful += 1
 
         except Exception as e:
-            print(f"Error converting {image_file.name}: {str(e)}")
+            pbar.set_postfix(file=image_file.name, status=f"error: {str(e)}")
             failed += 1
-
+        
+        pbar.update(1)
+    
+    pbar.close()
     print(f"JPEG conversion complete! Successfully: {successful}, Failed: {failed}")
     return converted_files
 
-def align_and_crop_to_celeba(image_path, output_size=(178, 218)):
+def align_and_crop_to_celeba(image_path, output_size=(178, 218), alignment_already_done=False):
     """Align and crop a face image to match CelebA format."""
     try:
+        # Check if the image is already aligned and processed
+        if alignment_already_done:
+            try:
+                # Try to open the image directly
+                img = Image.open(image_path)
+                # Check if the image already has the expected dimensions
+                if img.size == output_size:
+                    return img
+            except Exception:
+                # If there's any error opening the image, proceed with alignment
+                pass
+                
         image = face_recognition.load_image_file(image_path)
         face_landmarks_list = face_recognition.face_landmarks(image)
         
         if not face_landmarks_list:
-            print(f"No face detected in {image_path}")
             return None
         
         landmarks = face_landmarks_list[0]
@@ -181,10 +206,9 @@ def align_and_crop_to_celeba(image_path, output_size=(178, 218)):
         return final_img
         
     except Exception as e:
-        print(f"Error processing {image_path}: {str(e)}")
         return None
 
-def align_dataset(input_folder, output_folder, output_size=(178, 218), keep_jpeg_folder=False):
+def align_dataset(input_folder, output_folder, output_size=(178, 218), keep_jpeg_folder=False, alignment_already_done=False):
     """Process all face images in a folder to match CelebA format."""
     input_path = Path(input_folder)
 
@@ -192,52 +216,78 @@ def align_dataset(input_folder, output_folder, output_size=(178, 218), keep_jpeg
         print(f"Input folder {input_folder} does not exist!")
         return None
 
-    jpeg_folder = input_path.parent / f"{input_path.name}_jpeg_temp"
     output_path = Path(output_folder)
     output_path.mkdir(exist_ok=True)
 
-    print(f"=== Aligning dataset: {input_folder} ===")
+    print(f"=== Processing dataset: {input_folder} ===")
     print(f"Output folder: {output_path}")
-
+    print(f"Alignment check enabled: {alignment_already_done}")
+    
+    # Regular alignment process
+    jpeg_folder = output_folder.parent / f"{input_path.name}_jpeg_temp"
+    
     # Convert to JPEG
-    jpeg_files = convert_to_jpeg(input_folder, jpeg_folder)
+    jpeg_files = convert_to_jpeg(input_folder, jpeg_folder, alignment_already_done=alignment_already_done)
     if not jpeg_files:
         print("No images were successfully converted to JPEG. Skipping.")
         return None
 
     # Process JPEG images
-    print(f"Processing {len(jpeg_files)} JPEG images for face alignment...")
     successful = 0
     failed = 0
+    skipped = 0
 
-    for i, jpeg_file in enumerate(jpeg_files):
+    # Create a progress bar for the alignment process
+    pbar = tqdm(total=len(jpeg_files), desc="Processing faces", unit="img")
+    
+    for jpeg_file in jpeg_files:
         jpeg_path = Path(jpeg_file)
-        print(f"Processing {i+1}/{len(jpeg_files)}: {jpeg_path.name}")
-
+        pbar.set_postfix(file=jpeg_path.name)
+        
+        # Determine the output filename
+        original_name = jpeg_path.stem
+        if original_name.endswith('_temp'):
+            original_name = original_name[:-5]
+        
+        output_file = output_path / f"{original_name}_aligned.jpg"
+        
+        # Check if the aligned file already exists and we're in skip mode
+        if alignment_already_done and output_file.exists():
+            skipped += 1
+            pbar.set_postfix(file=jpeg_path.name, status="skipped (already exists)")
+            pbar.update(1)
+            continue
+        
+        # If we get here, we need to process the image
         jpeg_file = str(jpeg_file).replace("\\", "\\\\")
-        aligned_img = align_and_crop_to_celeba(jpeg_file, output_size)
+        aligned_img = align_and_crop_to_celeba(jpeg_file, output_size, alignment_already_done=False)
 
         if aligned_img is not None:
-            original_name = jpeg_path.stem
-            if original_name.endswith('_temp'):
-                original_name = original_name[:-5]
-
-            output_file = output_path / f"{original_name}_aligned.jpg"
             aligned_img.save(output_file, 'JPEG', quality=95)
             successful += 1
+            pbar.set_postfix(file=jpeg_path.name, status="success")
         else:
             failed += 1
+            pbar.set_postfix(file=jpeg_path.name, status="failed (no face)")
+        
+        pbar.update(1)
+    
+    pbar.close()
+    
+    # Print summary including skipped files
+    print(f"Processing complete! Successfully: {successful}, Failed: {failed}, Skipped: {skipped}")
 
-    # Cleanup
-    if not keep_jpeg_folder:
+    # Cleanup (only needed for regular alignment process)
+    if not alignment_already_done and not keep_jpeg_folder:
         try:
             shutil.rmtree(jpeg_folder)
             print(f"Removed intermediate JPEG folder: {jpeg_folder}")
         except Exception as e:
             print(f"Warning: Could not remove intermediate JPEG folder: {str(e)}")
 
-    print(f"Alignment complete! Successfully: {successful}, Failed: {failed}")
-    return output_path if successful > 0 else None
+    if not alignment_already_done:
+        print(f"Alignment complete! Successfully: {successful}, Failed: {failed}")
+    return output_path if successful + skipped > 0 else None
 
 def get_activations(files, model, batch_size=64, dims=2048, device='cuda', num_workers=4):
     """Extract features from images using InceptionV3."""
@@ -303,11 +353,28 @@ def select_reference_subset(reference_dir, enhanced_dir, batch_size=64, num_work
     # Find k-th nearest neighbors
     print(f"Finding the {k}-th nearest neighbors...")
     dists = pairwise_distances(features_ref, features_enh)
+    
     selected_indices = set()
-    for i in range(dists.shape[0]):
-        sorted_indices = np.argsort(dists[i])
-        neighbor_idx = sorted_indices[k-1]
-        selected_indices.add(neighbor_idx)
+    current_k = k
+    # Keep increasing k until we have enough images or exhausted all possibilities
+    while len(selected_indices) < len(enhanced_files) and current_k <= min(dists.shape[1], len(enhanced_files)):
+        # Reset and try with new k value
+        selected_indices = set()
+        for i in range(dists.shape[0]):
+            sorted_indices = np.argsort(dists[i])
+            if current_k <= len(sorted_indices):
+                neighbor_idx = sorted_indices[current_k-1]
+                selected_indices.add(neighbor_idx)
+        
+        if len(selected_indices) < len(enhanced_files):
+            print(f"Selected {len(selected_indices)} images with k={current_k}, increasing k...")
+            current_k += 10
+        else:
+            print(f"Selected {len(selected_indices)} images with k={current_k}")
+            
+    # If we still don't have enough images, use all available
+    if len(selected_indices) < len(enhanced_files):
+        print(f"Warning: Could only select {len(selected_indices)} unique images even with maximum k")
     
     selected_indices = list(selected_indices)
     selected_files = [enhanced_files[i] for i in selected_indices]
@@ -416,7 +483,7 @@ def main():
     parser.add_argument('reference_dataset', help='Path to reference dataset')
     
     # Optional arguments
-    parser.add_argument('--batch-size', type=int, default=64, help='Batch size for processing')
+    parser.add_argument('--batch-size', type=int, default=256, help='Batch size for processing')
     parser.add_argument('--device', type=str, default='cuda:0', help='Device to use (cuda:0, cpu, etc.)')
     parser.add_argument('--num-workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--dims', type=int, default=2048, choices=list(InceptionV3.BLOCK_INDEX_BY_DIM),
@@ -429,6 +496,7 @@ def main():
     parser.add_argument('--keep-jpeg', action='store_true', 
                        help='Keep intermediate JPEG folders after alignment')
     parser.add_argument('--output-dir', help='Base output directory (default: parent of enhanced dataset)', default='output_folder')
+    parser.add_argument('--alignment_already_done', action='store_true', help='Skips images already processed earlier')
     
     args = parser.parse_args()
     
@@ -462,13 +530,13 @@ def main():
     output_size = tuple(args.output_size)
     
     print("Aligning enhanced dataset...")
-    enhanced_result = align_dataset(args.enhanced_dataset, enhanced_aligned, output_size, args.keep_jpeg)
+    enhanced_result = align_dataset(args.enhanced_dataset, enhanced_aligned, output_size, args.keep_jpeg, args.alignment_already_done)
     
     print("\nAligning raw dataset...")
-    raw_result = align_dataset(args.raw_dataset, raw_aligned, output_size, args.keep_jpeg)
+    raw_result = align_dataset(args.raw_dataset, raw_aligned, output_size, args.keep_jpeg, args.alignment_already_done)
     
     print("\nAligning reference dataset...")
-    reference_result = align_dataset(args.reference_dataset, reference_aligned, output_size, args.keep_jpeg)
+    reference_result = align_dataset(args.reference_dataset, reference_aligned, output_size, args.keep_jpeg, args.alignment_already_done)
     
     if not all([enhanced_result, raw_result, reference_result]):
         print("ERROR: One or more datasets failed to align properly!")
