@@ -368,7 +368,7 @@ def select_reference_subset(reference_dir, enhanced_dir, batch_size=64, num_work
         
         if len(selected_indices) < len(enhanced_files):
             print(f"Selected {len(selected_indices)} images with k={current_k}, increasing k...")
-            current_k += 10
+            current_k += 50
         else:
             print(f"Selected {len(selected_indices)} images with k={current_k}")
             

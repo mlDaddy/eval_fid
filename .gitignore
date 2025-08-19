@@ -3,3 +3,4 @@ output_folder/*
 *.png
 *.jpg
 *.bash
+*.out
